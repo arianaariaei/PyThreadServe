@@ -172,5 +172,4 @@ cython_debug/
 
 
 server.log
-test.py
 static/*
