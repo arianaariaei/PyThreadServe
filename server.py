@@ -6,7 +6,7 @@ import uuid
 from multiprocessing import Pipe, Process, Lock, Value
 import threading
 from concurrent.futures import ThreadPoolExecutor
-import msvcrt  # Windows-specific file locking
+import msvcrt
 
 
 class FileLocker:
@@ -14,12 +14,10 @@ class FileLocker:
         self.file_obj = file_obj
 
     def __enter__(self):
-        # Lock the file using Windows-specific locking
         msvcrt.locking(self.file_obj.fileno(), msvcrt.LK_NBLCK, 1)
         return self.file_obj
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # Unlock the file
         try:
             self.file_obj.seek(0)
             msvcrt.locking(self.file_obj.fileno(), msvcrt.LK_UNLCK, 1)
@@ -41,7 +39,6 @@ class Worker(Process):
     def handle_get_request(self, request_data):
         try:
             path = request_data['path']
-            # Security: Prevent directory traversal
             file_path = os.path.join(self.static_dir, path.lstrip('/'))
             if not os.path.normpath(file_path).startswith(os.path.normpath(self.static_dir)):
                 return {
@@ -76,7 +73,6 @@ class Worker(Process):
 
     def handle_post_request(self, request_data):
         try:
-            # Validate content is not empty
             content = request_data.get('content', '').strip()
             if not content:
                 return {
@@ -89,30 +85,27 @@ class Worker(Process):
             filename = f"{timestamp}_{request_id}.txt"
             file_path = os.path.join(self.static_dir, filename)
 
-            # Simulate some work
             time.sleep(2)
 
-            # Use file locking for safe writing
             try:
                 with open(file_path, 'w') as f:
                     with FileLocker(f):
                         f.write(content)
-                        f.flush()  # Ensure content is written to disk
-                        os.fsync(f.fileno())  # Force write to disk
+                        f.flush()
+                        os.fsync(f.fileno())
             except Exception as file_error:
                 print(f"[Worker {self.worker_id}] ❌ Error writing file: {file_error}")
                 if os.path.exists(file_path):
-                    os.remove(file_path)  # Clean up partial file
+                    os.remove(file_path)
                 raise
 
-            # Verify file was written correctly
             if os.path.getsize(file_path) == 0:
-                os.remove(file_path)  # Clean up empty file
+                os.remove(file_path)
                 raise Exception("File was created but is empty")
 
             print(f"[Worker {self.worker_id}] ✅ Created file: {filename}")
             return {
-                'status': 201,  # Changed to 201 Created for better HTTP semantics
+                'status': 201,
                 'content': b'File created successfully'
             }
         except Exception as e:
@@ -134,7 +127,7 @@ class Worker(Process):
         print(f"[Worker {self.worker_id}] 🚀 Started")
         while True:
             try:
-                if not self.pipe.poll(1):  # Check pipe with timeout
+                if not self.pipe.poll(1):
                     continue
 
                 request = self.pipe.recv()
@@ -179,14 +172,12 @@ class HTTPServer:
         self.host = host
         self.port = port
         self.num_workers = num_workers
-        self.thread_pool = ThreadPoolExecutor(max_workers=20)  # Thread pool for request handling
+        self.thread_pool = ThreadPoolExecutor(max_workers=20)
 
-        # Create shared resources
         self.log_lock = Lock()
         self.active_posts = Value('i', 0)
         self.posts_lock = Lock()
 
-        # Create worker processes and pipes
         self.workers = []
         self.pipes = []
         self.current_worker = 0
@@ -206,19 +197,16 @@ class HTTPServer:
             self.pipes.append(parent_conn)
 
     def get_next_worker(self):
-        # Round Robin worker selection
-        with threading.Lock():  # Thread-safe worker selection
+        with threading.Lock():
             worker_index = self.current_worker
             self.current_worker = (self.current_worker + 1) % self.num_workers
             return worker_index
 
     def handle_request(self, client_socket, addr):
-        # Submit the request to thread pool instead of creating new thread
         self.thread_pool.submit(self._process_request_wrapper, client_socket, addr)
 
     def _process_request_wrapper(self, client_socket, addr):
         try:
-            # Read all data from socket
             request_data = b''
             while True:
                 chunk = client_socket.recv(4096)
@@ -226,7 +214,6 @@ class HTTPServer:
                     break
                 request_data += chunk
                 if b'\r\n\r\n' in request_data:
-                    # Check if we've received the complete request
                     headers, body = request_data.split(b'\r\n\r\n', 1)
                     content_length = None
                     for line in headers.split(b'\r\n'):
@@ -239,7 +226,6 @@ class HTTPServer:
             if not request_data:
                 return
 
-            # Decode and parse the request
             try:
                 headers = request_data.split(b'\r\n\r\n', 1)[0].decode()
                 first_line = headers.split('\n')[0].strip()
@@ -249,7 +235,6 @@ class HTTPServer:
                 client_socket.send(response)
                 return
 
-            # Get body for POST requests
             body = ""
             if method == "POST":
                 try:
@@ -264,14 +249,14 @@ class HTTPServer:
                     client_socket.send(response)
                     return
 
-            # Handle POST request limiting
             post_request = False
             if method == "POST":
                 with self.posts_lock:
                     if self.active_posts.value >= 5:
                         print(
                             f"[Server] ⛔ Rejecting POST request - Maximum concurrent POSTs reached ({self.active_posts.value}/5)")
-                        response = b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nServer is handling maximum number of concurrent POST requests"
+                        response = (b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nServer is "
+                                    b"handling maximum number of concurrent POST requests")
                         client_socket.send(response)
                         return
 
@@ -298,11 +283,9 @@ class HTTPServer:
 
     def _process_request(self, method, path, body, addr, client_socket, post_request):
         try:
-            # Select worker using Round Robin
             worker_index = self.get_next_worker()
             print(f"[Server] ➡️ Routing request to Worker {worker_index}")
 
-            # Send request to worker through pipe
             request = {
                 'method': method,
                 'path': path,
@@ -311,10 +294,8 @@ class HTTPServer:
             }
             self.pipes[worker_index].send(request)
 
-            # Wait for response from worker
             response = self.pipes[worker_index].recv()
 
-            # Build HTTP response
             status_messages = {
                 200: 'OK',
                 201: 'Created',
@@ -363,14 +344,11 @@ class HTTPServer:
                     print(f"[Server] ❌ Error accepting connection: {e}")
 
         finally:
-            # Shutdown thread pool
             self.thread_pool.shutdown(wait=True)
 
-            # Shutdown workers
             for pipe in self.pipes:
                 pipe.send("shutdown")
 
-            # Wait for workers to finish
             for worker in self.workers:
                 worker.join()
 
@@ -378,97 +356,12 @@ class HTTPServer:
             print("=== Server shutdown complete ===\n")
 
     def log_request(self, method, path, status_code, worker_id="Server"):
-        """Log requests at the server level (for requests rejected before reaching workers)"""
         with self.log_lock:
             with open('server.log', 'a') as f:
                 with FileLocker(f):
                     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     log_entry = f"[{timestamp}] {worker_id} - {method} {path} - Status: {status_code}\n"
                     f.write(log_entry)
-
-    def _process_request_wrapper(self, client_socket, addr):
-        try:
-            # Read all data from socket
-            request_data = b''
-            while True:
-                chunk = client_socket.recv(4096)
-                if not chunk:
-                    break
-                request_data += chunk
-                if b'\r\n\r\n' in request_data:
-                    headers, body = request_data.split(b'\r\n\r\n', 1)
-                    content_length = None
-                    for line in headers.split(b'\r\n'):
-                        if line.lower().startswith(b'content-length:'):
-                            content_length = int(line.split(b':', 1)[1].strip())
-                            break
-                    if content_length is None or len(body) >= content_length:
-                        break
-
-            if not request_data:
-                return
-
-            # Decode and parse the request
-            try:
-                headers = request_data.split(b'\r\n\r\n', 1)[0].decode()
-                first_line = headers.split('\n')[0].strip()
-                method, path, _ = first_line.split()
-            except Exception:
-                self.log_request("UNKNOWN", "INVALID_REQUEST", 400)  # Log invalid request
-                response = b"HTTP/1.0 400 Bad Request\r\n\r\nInvalid request format"
-                client_socket.send(response)
-                return
-
-            # Get body for POST requests
-            body = ""
-            if method == "POST":
-                try:
-                    body = request_data.split(b'\r\n\r\n', 1)[1].decode()
-                except Exception:
-                    self.log_request(method, path, 400)  # Log bad request
-                    response = b"HTTP/1.0 400 Bad Request\r\n\r\nMissing or invalid request body"
-                    client_socket.send(response)
-                    return
-
-                if not body.strip():
-                    self.log_request(method, path, 400)  # Log empty body error
-                    response = b"HTTP/1.0 400 Bad Request\r\n\r\nEmpty request body"
-                    client_socket.send(response)
-                    return
-
-            # Handle POST request limiting
-            post_request = False
-            if method == "POST":
-                with self.posts_lock:
-                    if self.active_posts.value >= 5:
-                        self.log_request(method, path, 503)  # Log rejected POST due to limit
-                        print(
-                            f"[Server] ⛔ Rejecting POST request - Maximum concurrent POSTs reached ({self.active_posts.value}/5)")
-                        response = b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nServer is handling maximum number of concurrent POST requests"
-                        client_socket.send(response)
-                        return
-
-                    self.active_posts.value += 1
-                    post_request = True
-                    print(f"[Server] ✅ Accepted POST request ({self.active_posts.value}/5)")
-
-            try:
-                self._process_request(method, path, body, addr, client_socket, post_request)
-            finally:
-                if post_request:
-                    with self.posts_lock:
-                        self.active_posts.value -= 1
-                        print(f"[Server] 📊 Active POST requests: {self.active_posts.value}/5")
-
-        except Exception as e:
-            print(f"[Server] ❌ Error handling request: {e}")
-            self.log_request("UNKNOWN", "SERVER_ERROR", 500)  # Log server errors
-            try:
-                client_socket.send(b"HTTP/1.0 500 Internal Server Error\r\n\r\n")
-            except:
-                pass
-        finally:
-            client_socket.close()
 
 
 if __name__ == "__main__":
